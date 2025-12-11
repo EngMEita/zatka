@@ -1,0 +1,23 @@
+{
+    "name": "meita/zatca",
+    "description": "PHP package to prepare, sign and send electronic invoices compliant with the ZATCA e‑invoicing regulations. It can be integrated into any PHP or Laravel project.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Eng. Mohamed A. Eita",
+            "email": "contact@mohammedadel.com"
+        }
+    ],
+    "require": {
+        "php": ">=7.4"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "Zatca\\": "src/"
+        }
+    }
+}
