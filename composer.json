@@ -20,4 +20,16 @@
             "Zatca\\": "src/"
         }
     }
+
+    ,
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Zatca\\ZatcaServiceProvider"
+            ],
+            "aliases": {
+                "Zatca": "Zatca\\Facades\\Zatca"
+            }
+        }
+    }
 }

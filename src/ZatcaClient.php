@@ -28,6 +28,15 @@ class ZatcaClient
     /** @var string|null */
     protected $certificatePath;
 
+    /** @var array|null Endpoints for clearance and reporting */
+    protected ?array $endpoints = null;
+
+    /** @var string Default invoice type to use when none provided */
+    protected string $invoiceType = 'simplified';
+
+    /** @var array Allowed invoice types for this client */
+    protected array $allowedInvoiceTypes = ['simplified', 'standard'];
+
     /**
      * ZatcaClient constructor.
      *
@@ -41,18 +50,58 @@ class ZatcaClient
      * @param array $config
      * @throws Exception
      */
-    public function __construct(array $config)
+    public function __construct($config)
     {
-        foreach (['base_url', 'client_id', 'secret', 'private_key_path'] as $key) {
-            if (empty($config[$key])) {
-                throw new Exception("Missing configuration option: {$key}");
+        // If a configuration object is provided, extract company settings
+        if ($config instanceof \Zatca\Support\ZatcaConfig) {
+            $company = $config->all();
+            // Ensure required values exist
+            foreach (['client_id', 'client_secret', 'private_key_path'] as $key) {
+                if (empty($company[$key])) {
+                    throw new Exception("Missing configuration option: {$key}");
+                }
             }
+            $this->clientId = $company['client_id'];
+            $this->secret   = $company['client_secret'];
+            $this->privateKeyPath = $company['private_key_path'];
+            $this->certificatePath = $company['certificate_path'] ?? null;
+            // Determine environment and endpoints
+            $env = $company['environment'] ?? 'sandbox';
+            if (isset($company['endpoints'][$env])) {
+                $this->endpoints = $company['endpoints'][$env];
+            }
+            // Default invoice type and allowed types
+            $this->invoiceType = strtolower($company['invoice_type'] ?? 'simplified');
+            $this->allowedInvoiceTypes = array_map('strtolower', $company['invoice_types'] ?? ['simplified', 'standard']);
+            // Fallback baseUrl for backwards compatibility
+            if ($this->endpoints && isset($this->endpoints['clearance'])) {
+                // remove trailing /invoices/clearance
+                $parts = explode('/invoices', $this->endpoints['clearance']);
+                $this->baseUrl = rtrim($parts[0] ?? $this->endpoints['clearance'], '/');
+            }
+        } else {
+            // Assume array configuration as before
+            if (!is_array($config)) {
+                throw new Exception('Configuration must be an array or an instance of ZatcaConfig');
+            }
+            foreach (['base_url', 'client_id', 'secret', 'private_key_path'] as $key) {
+                if (empty($config[$key])) {
+                    throw new Exception("Missing configuration option: {$key}");
+                }
+            }
+            $this->baseUrl = rtrim($config['base_url'], '/');
+            $this->clientId = $config['client_id'];
+            $this->secret   = $config['secret'];
+            $this->privateKeyPath = $config['private_key_path'];
+            $this->certificatePath = $config['certificate_path'] ?? null;
+            // Build endpoints based on baseUrl
+            $this->endpoints = [
+                'clearance' => $this->baseUrl . '/invoices/clearance',
+                'reporting' => $this->baseUrl . '/invoices/reporting',
+            ];
+            $this->invoiceType = strtolower($config['invoice_type'] ?? 'simplified');
+            $this->allowedInvoiceTypes = array_map('strtolower', $config['invoice_types'] ?? ['simplified', 'standard']);
         }
-        $this->baseUrl = rtrim($config['base_url'], '/');
-        $this->clientId = $config['client_id'];
-        $this->secret   = $config['secret'];
-        $this->privateKeyPath = $config['private_key_path'];
-        $this->certificatePath = $config['certificate_path'] ?? null;
     }
 
     /**
@@ -164,7 +213,8 @@ class ZatcaClient
                 'previousInvoiceHash'=> $invoice->get('previous_hash'),
                 'invoice'            => base64_encode($prepared['xml']),
             ];
-            $endpoint = $this->baseUrl . '/invoices/clearance';
+            // Determine endpoint; fallback to baseUrl if endpoints not defined
+            $endpoint = $this->endpoints['clearance'] ?? ($this->baseUrl . '/invoices/clearance');
             $response = $this->sendRequest($endpoint, $body);
             return $response;
         } catch (Exception $e) {
@@ -193,7 +243,7 @@ class ZatcaClient
                 'previousInvoiceHash'=> $invoice->get('previous_hash'),
                 'invoice'            => base64_encode($prepared['xml']),
             ];
-            $endpoint = $this->baseUrl . '/invoices/reporting';
+            $endpoint = $this->endpoints['reporting'] ?? ($this->baseUrl . '/invoices/reporting');
             $response = $this->sendRequest($endpoint, $body);
             return $response;
         } catch (Exception $e) {
@@ -202,6 +252,23 @@ class ZatcaClient
                 'errors' => [$e->getMessage()],
             ];
         }
+    }
+
+    /**
+     * Send an invoice selecting the appropriate API based on type. If no
+     * type is provided, the client's default invoice type will be used.
+     *
+     * @param Invoice $invoice
+     * @param string|null $type "simplified" or "standard"
+     * @return array
+     */
+    public function sendInvoice(Invoice $invoice, ?string $type = null): array
+    {
+        $type = strtolower($type ?? $this->invoiceType);
+        if ($type === 'simplified') {
+            return $this->sendSimplifiedInvoice($invoice);
+        }
+        return $this->sendStandardInvoice($invoice);
     }
 
     /**

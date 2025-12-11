@@ -1,0 +1,35 @@
+<?php
+return [
+    'default' => 'company_1',
+
+    'companies' => [
+        'company_1' => [
+            'seller_name'      => '',
+            'seller_vat'       => '',
+            'seller_crn'       => '',
+            'currency'         => 'SAR',
+            'invoice_type'     => 'simplified', // or standard
+
+            'address' => [
+                'street'        => '',
+                'building_no'   => '',
+                'city'          => '',
+                'postal_code'   => '',
+                'country'       => 'SA',
+            ],
+
+            'tax' => [
+                'percent'        => 15,
+                'category_code'  => 'S',
+            ],
+
+            'certificate_path' => '',
+            'private_key_path' => '',
+
+            'client_id'        => '',
+            'client_secret'    => '',
+
+            'environment'      => 'sandbox', // or production
+        ],
+    ],
+];
