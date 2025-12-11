@@ -35,7 +35,7 @@
 ثم تشغيل:
 
 ```bash
-composer install
+composer require meita/zatca
 ```
 
 الحزمة تمت تهيئتها بحيث يتم تحميل الأصناف ضمن مساحة الاسم `Zatca\\`.
