@@ -1,9 +1,9 @@
 <?php
 
-namespace Zatca\Tests;
+namespace Meita\Zatca\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Zatca\Utilities\QrCodeGenerator;
+use Meita\Zatca\Utilities\QrCodeGenerator;
 
 /**
  * Class QrCodeGeneratorTest

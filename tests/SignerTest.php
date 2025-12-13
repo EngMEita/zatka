@@ -1,9 +1,9 @@
 <?php
 
-namespace Zatca\Tests;
+namespace Meita\Zatca\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Zatca\Utilities\Signer;
+use Meita\Zatca\Utilities\Signer;
 use DOMDocument;
 
 /**

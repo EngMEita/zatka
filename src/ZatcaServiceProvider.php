@@ -1,10 +1,10 @@
 <?php
 
-namespace Zatca;
+namespace Meita\Zatca;
 
 use Illuminate\Support\ServiceProvider;
-use Zatca\Support\ZatcaConfig;
-use Zatca\ZatcaClient;
+use Meita\Zatca\Support\ZatcaConfig;
+use Meita\Zatca\ZatcaClient;
 
 /**
  * Class ZatcaServiceProvider

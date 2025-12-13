@@ -1,10 +1,10 @@
 <?php
 
-namespace Zatca;
+namespace Meita\Zatca;
 
 use Exception;
-use Zatca\Utilities\Signer;
-use Zatca\Utilities\QrCodeGenerator;
+use Meita\Zatca\Utilities\Signer;
+use Meita\Zatca\Utilities\QrCodeGenerator;
 use DOMDocument;
 use DOMXPath;
 
@@ -38,6 +38,16 @@ class ZatcaClient
     protected array $allowedInvoiceTypes = ['simplified', 'standard'];
 
     /**
+     * Optional callback invoked when the ZATCA API returns errors. If set,
+     * this callback will receive the entire array of errors before a
+     * ZatcaException is thrown. It can be used to log, transform or
+     * otherwise handle the error list.
+     *
+     * @var callable|null
+     */
+    protected $errorCallback = null;
+
+    /**
      * ZatcaClient constructor.
      *
      * Accepts an array of configuration options:
@@ -53,7 +63,7 @@ class ZatcaClient
     public function __construct($config)
     {
         // If a configuration object is provided, extract company settings
-        if ($config instanceof \Zatca\Support\ZatcaConfig) {
+        if ($config instanceof \Meita\Zatca\Support\ZatcaConfig) {
             $company = $config->all();
             // Ensure required values exist
             foreach (['client_id', 'client_secret', 'private_key_path'] as $key) {
@@ -102,6 +112,13 @@ class ZatcaClient
             $this->invoiceType = strtolower($config['invoice_type'] ?? 'simplified');
             $this->allowedInvoiceTypes = array_map('strtolower', $config['invoice_types'] ?? ['simplified', 'standard']);
         }
+
+        // Allow a custom error callback in configuration (pure PHP usage). It
+        // must be callable; otherwise it is ignored. This is not supported
+        // through Laravel config as callbacks cannot be serialized.
+        if (is_array($config) && isset($config['on_error']) && is_callable($config['on_error'])) {
+            $this->errorCallback = $config['on_error'];
+        }
     }
 
     /**
@@ -139,8 +156,12 @@ class ZatcaClient
             $fields[8] = $publicKeyClean;
         }
         $qr = QrCodeGenerator::generate($fields);
-        // Inject signature and QR into XML
-        $signedXml = $this->insertSignatureAndQr($xml, $signature, $qr);
+        // Determine previous hash and invoice counter from invoice data if available
+        $previousHash = $invoice->get('previous_hash');
+        // Determine invoice counter value – if provided in data or default to 1
+        $icv = $invoice->get('invoice_counter');
+        // Inject signature, QR, previous hash and counter value into XML
+        $signedXml = $this->insertSignatureAndQr($xml, $signature, $qr, $previousHash, $icv);
         return [
             'xml'       => $signedXml,
             'hash'      => $hash,
@@ -161,36 +182,72 @@ class ZatcaClient
      * @param string $qr Base64 encoded TLV payload
      * @return string
      */
-    protected function insertSignatureAndQr(string $xml, string $signature, string $qr): string
+    protected function insertSignatureAndQr(string $xml, string $signature, string $qr, ?string $previousHash = null, ?string $counterValue = null): string
     {
+        /**
+         * Injects cryptographic stamp and auxiliary references into the invoice XML.
+         *
+         * ZATCA requires three AdditionalDocumentReference blocks: one for the
+         * Invoice Counter Value (ICV), one for the Previous Invoice Hash (PIH)
+         * and one for the QR Code【896391609891209†L2707-L2836】. Each must use the
+         * correct ID (ICV, PIH, QR) and the embedded binary object must use the
+         * MIME type "text/plain"【896391609891209†L2707-L2836】. See BR‑KSA‑CL‑03 for
+         * details.
+         */
         $doc = new DOMDocument('1.0', 'utf-8');
         $doc->preserveWhiteSpace = false;
         $doc->formatOutput = true;
         $doc->loadXML($xml);
-        $xpath = new DOMXPath($doc);
-        // Register namespaces
-        $xpath->registerNamespace('cbc', 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2');
-        $xpath->registerNamespace('cac', 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2');
-
         $root = $doc->documentElement;
-        // Add a simple Signature element
+
+        // 1. Add simple Signature element with base64 signature value
         $signatureEl = $doc->createElement('Signature');
         $signatureValue = $doc->createElement('SignatureValue', $signature);
         $signatureEl->appendChild($signatureValue);
         $root->appendChild($signatureEl);
 
-        // Add AdditionalDocumentReference for QR code
-        $additionalDocRef = $doc->createElement('cac:AdditionalDocumentReference');
-        $id = $doc->createElement('cbc:ID', 'QR');
-        $additionalDocRef->appendChild($id);
-        $attachment = $doc->createElement('cac:Attachment');
-        $embedded = $doc->createElement('cbc:EmbeddedDocumentBinaryObject', $qr);
-        $embedded->setAttribute('mimeCode', 'application/octet-stream');
-        $embedded->setAttribute('encodingCode', 'Base64');
-        $attachment->appendChild($embedded);
-        $additionalDocRef->appendChild($attachment);
+        // Determine defaults for previous hash and invoice counter value
+        // The previous invoice hash must be base64 encoded SHA256 of the previous
+        // invoice. If none provided, use the hash of "0" as per specification【896391609891209†L2765-L2773】.
+        $prevHash = $previousHash;
+        if (empty($prevHash)) {
+            // Base64 encoded SHA256 hash of "0"
+            $prevHash = 'NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZiNTdlOQ==';
+        }
+        $icvValue = $counterValue;
+        if (empty($icvValue)) {
+            // Default invoice counter value is 1. Must be numeric (digits only)
+            $icvValue = '1';
+        }
 
-        $root->appendChild($additionalDocRef);
+        // 2. Add AdditionalDocumentReference for Invoice Counter Value (ICV)
+        $icvRef = $doc->createElement('cac:AdditionalDocumentReference');
+        $icvRef->appendChild($doc->createElement('cbc:ID', 'ICV'));
+        $icvRef->appendChild($doc->createElement('cbc:UUID', $icvValue));
+        $root->appendChild($icvRef);
+
+        // 3. Add AdditionalDocumentReference for Previous Invoice Hash (PIH)
+        $pihRef = $doc->createElement('cac:AdditionalDocumentReference');
+        $pihRef->appendChild($doc->createElement('cbc:ID', 'PIH'));
+        $pihAttachment = $doc->createElement('cac:Attachment');
+        $pihEmbedded = $doc->createElement('cbc:EmbeddedDocumentBinaryObject', $prevHash);
+        $pihEmbedded->setAttribute('mimeCode', 'text/plain');
+        // Do not specify encoding for PIH per spec – value is already base64
+        $pihAttachment->appendChild($pihEmbedded);
+        $pihRef->appendChild($pihAttachment);
+        $root->appendChild($pihRef);
+
+        // 4. Add AdditionalDocumentReference for QR Code (QR)
+        $qrRef = $doc->createElement('cac:AdditionalDocumentReference');
+        $qrRef->appendChild($doc->createElement('cbc:ID', 'QR'));
+        $qrAttachment = $doc->createElement('cac:Attachment');
+        $qrEmbedded = $doc->createElement('cbc:EmbeddedDocumentBinaryObject', $qr);
+        // Use text/plain as required by ZATCA【896391609891209†L2707-L2836】
+        $qrEmbedded->setAttribute('mimeCode', 'text/plain');
+        $qrEmbedded->setAttribute('encodingCode', 'Base64');
+        $qrAttachment->appendChild($qrEmbedded);
+        $qrRef->appendChild($qrAttachment);
+        $root->appendChild($qrRef);
 
         return $doc->saveXML();
     }
@@ -307,17 +364,74 @@ class ZatcaClient
         }
         // Attempt to decode JSON
         $data = json_decode($responseBody, true);
-        if ($httpCode >= 200 && $httpCode < 300) {
+        // If decoding fails, return raw body as error
+        if ($data === null) {
             return [
-                'status' => 'success',
-                'response' => $data,
-                // Some APIs return the stamped invoice in Base64; include raw response
+                'status'    => 'error',
+                'errors'    => [$responseBody],
+                'http_code' => $httpCode,
             ];
         }
-        return [
-            'status' => 'error',
-            'errors' => $data['errors'] ?? [$responseBody],
-            'http_code' => $httpCode,
-        ];
+
+        // If HTTP code indicates success, still check for errors key
+        if ($httpCode >= 200 && $httpCode < 300) {
+            try {
+                // Will throw ZatcaException if errors key is present
+                \Meita\Zatca\Support\ZatcaErrorHandler::handle($data, $this->errorCallback);
+            } catch (\Meita\Zatca\Support\ZatcaException $ex) {
+                return [
+                    'status' => 'error',
+                    'errors' => [
+                        [
+                            'category' => $ex->getCategory(),
+                            'code'     => $ex->getZatcaCode(),
+                            'message'  => $ex->getMessage(),
+                        ],
+                    ],
+                    'http_code' => $httpCode,
+                ];
+            }
+            return [
+                'status'   => 'success',
+                'response' => $data,
+            ];
+        }
+
+        // HTTP error codes. Attempt to handle errors key and throw exception
+        try {
+            \Meita\Zatca\Support\ZatcaErrorHandler::handle($data, $this->errorCallback);
+            // If no errors key present, treat as unknown error
+            return [
+                'status'    => 'error',
+                'errors'    => [$responseBody],
+                'http_code' => $httpCode,
+            ];
+        } catch (\Meita\Zatca\Support\ZatcaException $ex) {
+            return [
+                'status' => 'error',
+                'errors' => [
+                    [
+                        'category' => $ex->getCategory(),
+                        'code'     => $ex->getZatcaCode(),
+                        'message'  => $ex->getMessage(),
+                    ],
+                ],
+                'http_code' => $httpCode,
+            ];
+        }
+    }
+
+    /**
+     * Set a callback to be invoked when the ZATCA API returns errors. The
+     * callback will receive an array of error objects. Calling this
+     * method overrides any callback specified in the configuration array.
+     *
+     * @param callable $callback
+     * @return $this
+     */
+    public function setErrorCallback(callable $callback): self
+    {
+        $this->errorCallback = $callback;
+        return $this;
     }
 }

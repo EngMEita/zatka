@@ -1,9 +1,9 @@
 <?php
 
-namespace Zatca\Tests;
+namespace Meita\Zatca\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Zatca\Invoice;
+use Meita\Zatca\Invoice;
 use DOMDocument;
 
 /**

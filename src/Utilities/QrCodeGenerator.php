@@ -1,6 +1,6 @@
 <?php
 
-namespace Zatca\Utilities;
+namespace Meita\Zatca\Utilities;
 
 /**
  * Class QrCodeGenerator

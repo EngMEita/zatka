@@ -1,6 +1,6 @@
 <?php
 
-namespace Zatca\Support;
+namespace Meita\Zatca\Support;
 
 use Exception;
 

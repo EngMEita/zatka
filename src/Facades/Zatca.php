@@ -1,6 +1,6 @@
 <?php
 
-namespace Zatca\Facades;
+namespace Meita\Zatca\Facades;
 
 use Illuminate\Support\Facades\Facade;
 

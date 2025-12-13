@@ -1,10 +1,10 @@
 <?php
 
-namespace Zatca\Tests;
+namespace Meita\Zatca\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Zatca\ZatcaClient;
-use Zatca\Invoice;
+use Meita\Zatca\ZatcaClient;
+use Meita\Zatca\Invoice;
 
 /**
  * Class ZatcaClientTest

@@ -1,6 +1,6 @@
 <?php
 
-namespace Zatca;
+namespace Meita\Zatca;
 
 use DOMDocument;
 use Exception;
@@ -40,7 +40,22 @@ class Invoice
             'invoice_total' => 0.0,
             'vat_total' => 0.0,
             'previous_hash' => null,
+            // Sequential invoice counter value (KSA‑16). Default to 1.
+            'invoice_counter' => '1',
             'items' => [],
+            // Default invoice type (simplified or standard)
+            'invoice_type' => 'simplified',
+            // Default currency and tax settings (will be overridden by config or passed data)
+            'currency' => 'SAR',
+            'tax_percent' => 15,
+            'tax_category_code' => 'S',
+            'address' => [
+                'street'      => '',
+                'building_no' => '',
+                'city'        => '',
+                'postal_code' => '',
+                'country'     => 'SA',
+            ],
         ];
         $this->data = array_merge($defaults, $data);
     }
@@ -94,6 +109,26 @@ class Invoice
         $doc = new DOMDocument('1.0', 'utf-8');
         $doc->formatOutput = true;
 
+        // Determine invoice type and currency
+        // Invoice type: "standard" (tax invoice) or "simplified" (simplified tax invoice).
+        // According to the ZATCA specification the business process (BT‑23) must always be
+        // "reporting:1.0"【896391609891209†L164-L171】, so we fix the ProfileID accordingly.
+        $invoiceType = strtolower($this->data['invoice_type'] ?? 'simplified');
+        // 388 = Tax Invoice, 389 = Simplified Tax Invoice
+        $invoiceTypeCode = $invoiceType === 'standard' ? '388' : '389';
+        // Use reporting:1.0 for both invoice types per BR‑KSA‑EN16931‑01
+        $profileId = 'reporting:1.0';
+        $currency = $this->data['currency'] ?? 'SAR';
+        $taxPercent = $this->data['tax_percent'] ?? 15;
+        $taxCategoryCode = $this->data['tax_category_code'] ?? 'S';
+        $sellerAddress = $this->data['address'] ?? [
+            'street' => '',
+            'building_no' => '',
+            'city' => '',
+            'postal_code' => '',
+            'country' => 'SA',
+        ];
+
         // Root element <Invoice>
         $invoice = $doc->createElement('Invoice');
         $invoice->setAttribute('xmlns', 'urn:oasis:names:specification:ubl:schema:xsd:Invoice-2');
@@ -101,48 +136,133 @@ class Invoice
         $invoice->setAttribute('xmlns:cbc', 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2');
 
         // UBL version
-        $version = $doc->createElement('cbc:UBLVersionID', '2.1');
-        $invoice->appendChild($version);
-
-        // Customization ID (ZATCA specification for invoices)
-        $invoice->appendChild($doc->createElement('cbc:CustomizationID', 'urn:ubl:specification:standard:1.0')); // placeholder
-
-        // UUID
+        $invoice->appendChild($doc->createElement('cbc:UBLVersionID', '2.1'));
+        // Customization ID (placeholder for now)
+        $invoice->appendChild($doc->createElement('cbc:CustomizationID', 'urn:ubl:specification:standard:1.0'));
+        // Business process / Profile ID
+        $invoice->appendChild($doc->createElement('cbc:ProfileID', $profileId));
+        // Invoice type code (388 = tax invoice, 389 = simplified invoice)
+        $invoice->appendChild($doc->createElement('cbc:InvoiceTypeCode', $invoiceTypeCode));
+        // UUID as Invoice ID
         $invoice->appendChild($doc->createElement('cbc:ID', $this->data['uuid']));
-
-        // Issue date
-        $invoice->appendChild($doc->createElement('cbc:IssueDate', substr($this->data['issue_date'], 0, 10)));
-        $invoice->appendChild($doc->createElement('cbc:IssueTime', substr($this->data['issue_date'], 11)));
+        // Issue date and time (KSA local or UTC time) - use date portion and time without offset
+        $issueDate = substr($this->data['issue_date'], 0, 10);
+        $issueTime = substr($this->data['issue_date'], 11, 8);
+        $invoice->appendChild($doc->createElement('cbc:IssueDate', $issueDate));
+        $invoice->appendChild($doc->createElement('cbc:IssueTime', $issueTime));
+        // Currency codes
+        $invoice->appendChild($doc->createElement('cbc:DocumentCurrencyCode', $currency));
+        $invoice->appendChild($doc->createElement('cbc:TaxCurrencyCode', $currency));
 
         // Seller (Accounting Supplier Party)
         $accountingSupplierParty = $doc->createElement('cac:AccountingSupplierParty');
         $party = $doc->createElement('cac:Party');
+        // Party name
         $partyName = $doc->createElement('cac:PartyName');
         $partyName->appendChild($doc->createElement('cbc:Name', $this->data['seller_name']));
         $party->appendChild($partyName);
+        // Party tax scheme with registration address and tax scheme
         $partyTaxScheme = $doc->createElement('cac:PartyTaxScheme');
         $partyTaxScheme->appendChild($doc->createElement('cbc:CompanyID', $this->data['seller_vat']));
+        // Registration address
+        $regAddress = $doc->createElement('cac:RegistrationAddress');
+        $regAddress->appendChild($doc->createElement('cbc:StreetName', $sellerAddress['street']));
+        $regAddress->appendChild($doc->createElement('cbc:BuildingNumber', $sellerAddress['building_no']));
+        $regAddress->appendChild($doc->createElement('cbc:CityName', $sellerAddress['city']));
+        $regAddress->appendChild($doc->createElement('cbc:PostalZone', $sellerAddress['postal_code']));
+        $regCountry = $doc->createElement('cac:Country');
+        $regCountry->appendChild($doc->createElement('cbc:IdentificationCode', $sellerAddress['country']));
+        $regAddress->appendChild($regCountry);
+        $partyTaxScheme->appendChild($regAddress);
+        // Tax scheme
+        $taxScheme = $doc->createElement('cac:TaxScheme');
+        $taxScheme->appendChild($doc->createElement('cbc:ID', 'VAT'));
+        $taxScheme->appendChild($doc->createElement('cbc:Name', 'VAT'));
+        $partyTaxScheme->appendChild($taxScheme);
         $party->appendChild($partyTaxScheme);
+        // Party legal entity (CRN) if present
+        if (!empty($this->data['seller_crn'])) {
+            $partyLegalEntity = $doc->createElement('cac:PartyLegalEntity');
+            $companyID = $doc->createElement('cbc:CompanyID', $this->data['seller_crn']);
+            $companyID->setAttribute('schemeID', 'CRN');
+            $partyLegalEntity->appendChild($companyID);
+            $party->appendChild($partyLegalEntity);
+        }
         $accountingSupplierParty->appendChild($party);
         $invoice->appendChild($accountingSupplierParty);
 
-        // Monetary totals
+        // Tax totals (BG-22) and VAT breakdown (BG-23)
+        $taxTotal = $doc->createElement('cac:TaxTotal');
+        $taxAmount = $doc->createElement('cbc:TaxAmount', number_format($this->data['vat_total'], 2, '.', ''));
+        $taxAmount->setAttribute('currencyID', $currency);
+        $taxTotal->appendChild($taxAmount);
+        // Tax subtotal
+        $taxSubTotal = $doc->createElement('cac:TaxSubtotal');
+        $taxableAmount = $doc->createElement('cbc:TaxableAmount', number_format($this->data['invoice_total'] - $this->data['vat_total'], 2, '.', ''));
+        $taxableAmount->setAttribute('currencyID', $currency);
+        $taxSubTotal->appendChild($taxableAmount);
+        $taxAmountSub = $doc->createElement('cbc:TaxAmount', number_format($this->data['vat_total'], 2, '.', ''));
+        $taxAmountSub->setAttribute('currencyID', $currency);
+        $taxSubTotal->appendChild($taxAmountSub);
+        $taxCategoryEl = $doc->createElement('cac:TaxCategory');
+        $taxCategoryEl->appendChild($doc->createElement('cbc:ID', $taxCategoryCode));
+        $taxCategoryEl->appendChild($doc->createElement('cbc:Percent', (string)$taxPercent));
+        $taxSchemeEl = $doc->createElement('cac:TaxScheme');
+        $taxSchemeEl->appendChild($doc->createElement('cbc:ID', 'VAT'));
+        $taxSchemeEl->appendChild($doc->createElement('cbc:Name', 'VAT'));
+        $taxCategoryEl->appendChild($taxSchemeEl);
+        $taxSubTotal->appendChild($taxCategoryEl);
+        $taxTotal->appendChild($taxSubTotal);
+        $invoice->appendChild($taxTotal);
+
+        // Monetary totals (LegalMonetaryTotal) including payable amount
         $legalMonetaryTotal = $doc->createElement('cac:LegalMonetaryTotal');
-        $legalMonetaryTotal->appendChild($doc->createElement('cbc:TaxInclusiveAmount', number_format($this->data['invoice_total'], 2, '.', '')));
-        $legalMonetaryTotal->appendChild($doc->createElement('cbc:TaxExclusiveAmount', number_format($this->data['invoice_total'] - $this->data['vat_total'], 2, '.', '')));
-        $legalMonetaryTotal->appendChild($doc->createElement('cbc:TaxAmount', number_format($this->data['vat_total'], 2, '.', '')));
+        $taxInclusive = $doc->createElement('cbc:TaxInclusiveAmount', number_format($this->data['invoice_total'], 2, '.', ''));
+        $taxInclusive->setAttribute('currencyID', $currency);
+        $legalMonetaryTotal->appendChild($taxInclusive);
+        $taxExclusive = $doc->createElement('cbc:TaxExclusiveAmount', number_format($this->data['invoice_total'] - $this->data['vat_total'], 2, '.', ''));
+        $taxExclusive->setAttribute('currencyID', $currency);
+        $legalMonetaryTotal->appendChild($taxExclusive);
+        $taxAmountTotal = $doc->createElement('cbc:TaxAmount', number_format($this->data['vat_total'], 2, '.', ''));
+        $taxAmountTotal->setAttribute('currencyID', $currency);
+        $legalMonetaryTotal->appendChild($taxAmountTotal);
+        // Payable amount (Amount due) = total with VAT
+        $payableAmount = $doc->createElement('cbc:PayableAmount', number_format($this->data['invoice_total'], 2, '.', ''));
+        $payableAmount->setAttribute('currencyID', $currency);
+        $legalMonetaryTotal->appendChild($payableAmount);
         $invoice->appendChild($legalMonetaryTotal);
 
-        // Line items
+        // Line items (BG-25)
+        $lineId = 1;
         foreach ($this->data['items'] as $item) {
             $invoiceLine = $doc->createElement('cac:InvoiceLine');
-            $invoiceLine->appendChild($doc->createElement('cbc:ID', '1'));
+            $invoiceLine->appendChild($doc->createElement('cbc:ID', (string)$lineId));
             $invoiceLine->appendChild($doc->createElement('cbc:InvoicedQuantity', $item['quantity']));
-            $invoiceLine->appendChild($doc->createElement('cbc:LineExtensionAmount', number_format($item['price'] * $item['quantity'], 2, '.', '')));
+            $lineNet = $item['price'] * $item['quantity'];
+            $lineNetEl = $doc->createElement('cbc:LineExtensionAmount', number_format($lineNet, 2, '.', ''));
+            $lineNetEl->setAttribute('currencyID', $currency);
+            $invoiceLine->appendChild($lineNetEl);
+            // Item details
             $itemElement = $doc->createElement('cac:Item');
             $itemElement->appendChild($doc->createElement('cbc:Name', $item['name']));
             $invoiceLine->appendChild($itemElement);
+            // Tax category for item
+            $classifiedTax = $doc->createElement('cac:ClassifiedTaxCategory');
+            $classifiedTax->appendChild($doc->createElement('cbc:ID', $taxCategoryCode));
+            $classifiedTax->appendChild($doc->createElement('cbc:Percent', (string)$taxPercent));
+            $taxSchemeIt = $doc->createElement('cac:TaxScheme');
+            $taxSchemeIt->appendChild($doc->createElement('cbc:ID', 'VAT'));
+            $taxSchemeIt->appendChild($doc->createElement('cbc:Name', 'VAT'));
+            $classifiedTax->appendChild($taxSchemeIt);
+            $invoiceLine->appendChild($classifiedTax);
+            // Price amount (net price)
+            $priceEl = $doc->createElement('cac:Price');
+            $priceAmount = $doc->createElement('cbc:PriceAmount', number_format($item['price'], 2, '.', ''));
+            $priceAmount->setAttribute('currencyID', $currency);
+            $priceEl->appendChild($priceAmount);
+            $invoiceLine->appendChild($priceEl);
             $invoice->appendChild($invoiceLine);
+            $lineId++;
         }
 
         $doc->appendChild($invoice);

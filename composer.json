@@ -17,18 +17,16 @@
     },
     "autoload": {
         "psr-4": {
-            "Zatca\\": "src/"
+            "Meita\\Zatca\\": "src/"
         }
-    }
-
-    ,
+    },
     "extra": {
         "laravel": {
             "providers": [
-                "Zatca\\ZatcaServiceProvider"
+                "Meita\\Zatca\\ZatcaServiceProvider"
             ],
             "aliases": {
-                "Zatca": "Zatca\\Facades\\Zatca"
+                "Zatca": "Meita\\Zatca\\Facades\\Zatca"
             }
         }
     }
