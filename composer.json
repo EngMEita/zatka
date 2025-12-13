@@ -18,7 +18,10 @@
     "autoload": {
         "psr-4": {
             "Meita\\Zatca\\": "src/"
-        }
+        },
+        "files": [
+            "src/Support/helper.php"
+        ]
     },
     "extra": {
         "laravel": {

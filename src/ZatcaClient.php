@@ -132,6 +132,25 @@ class ZatcaClient
      */
     public function prepareSignedInvoice(Invoice $invoice): array
     {
+        // Auto-calculate totals if invoice_total or vat_total missing or zero
+        $invoiceTotal = $invoice->get('invoice_total');
+        $vatTotal = $invoice->get('vat_total');
+        if (empty($invoiceTotal) || empty($vatTotal)) {
+            // Compute totals from items using helper function
+            if (function_exists('Meita\Zatca\Support\calculateTotals')) {
+                $items = $invoice->get('items') ?? [];
+                $totals = \Meita\Zatca\Support\calculateTotals($items);
+                // update invoice data (via reflection of protected property)
+                // We can't modify protected property directly; use reflection
+                $ref = new \ReflectionClass($invoice);
+                $prop = $ref->getProperty('data');
+                $prop->setAccessible(true);
+                $data = $prop->getValue($invoice);
+                $data['invoice_total'] = $totals['gross_total'];
+                $data['vat_total'] = $totals['vat_total'];
+                $prop->setValue($invoice, $data);
+            }
+        }
         // Generate XML from invoice data
         $xml = $invoice->toXml();
         // Compute hash (hex string)

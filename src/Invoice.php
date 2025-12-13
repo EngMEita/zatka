@@ -34,7 +34,10 @@ class Invoice
     {
         $defaults = [
             'uuid' => self::generateUuid(),
-            'issue_date' => date('c'),
+            // by default we only fill in the date portion; time should be supplied via issue_time
+            'issue_date' => date('Y-m-d'),
+            // separate issue time; default to current time in HH:MM:SS format
+            'issue_time' => date('H:i:s'),
             'seller_name' => '',
             'seller_vat' => '',
             'invoice_total' => 0.0,
@@ -42,6 +45,7 @@ class Invoice
             'previous_hash' => null,
             // Sequential invoice counter value (KSA‑16). Default to 1.
             'invoice_counter' => '1',
+            'invoice_number' => null,
             'items' => [],
             // Default invoice type (simplified or standard)
             'invoice_type' => 'simplified',
@@ -49,6 +53,10 @@ class Invoice
             'currency' => 'SAR',
             'tax_percent' => 15,
             'tax_category_code' => 'S',
+            // Default invoice transaction code (KSA‑2). 0100000 for tax invoice, 0200000 for simplified.
+            'invoice_transaction_code' => null,
+            // Profile execution ID (BT‑24). For ZATCA this must always be 1.0
+            'profile_execution_id' => '1.0',
             'address' => [
                 'street'      => '',
                 'building_no' => '',
@@ -139,17 +147,23 @@ class Invoice
         $invoice->appendChild($doc->createElement('cbc:UBLVersionID', '2.1'));
         // Customization ID (placeholder for now)
         $invoice->appendChild($doc->createElement('cbc:CustomizationID', 'urn:ubl:specification:standard:1.0'));
-        // Business process / Profile ID
+        // Business process / Profile ID (reporting:1.0) and Execution ID (always 1.0 for ZATCA)
         $invoice->appendChild($doc->createElement('cbc:ProfileID', $profileId));
-        // Invoice type code (388 = tax invoice, 389 = simplified invoice)
-        $invoice->appendChild($doc->createElement('cbc:InvoiceTypeCode', $invoiceTypeCode));
-        // UUID as Invoice ID
-        $invoice->appendChild($doc->createElement('cbc:ID', $this->data['uuid']));
-        // Issue date and time (KSA local or UTC time) - use date portion and time without offset
-        $issueDate = substr($this->data['issue_date'], 0, 10);
-        $issueTime = substr($this->data['issue_date'], 11, 8);
-        $invoice->appendChild($doc->createElement('cbc:IssueDate', $issueDate));
-        $invoice->appendChild($doc->createElement('cbc:IssueTime', $issueTime));
+        $invoice->appendChild($doc->createElement('cbc:ProfileExecutionID', $this->data['profile_execution_id']));
+        // Invoice sequential number (ID) and UUID (KSA-1). Use invoice_number if provided, otherwise invoice_counter.
+        $invoiceNumber = $this->data['invoice_number'] ?? $this->data['invoice_counter'] ?? $this->data['uuid'];
+        $invoice->appendChild($doc->createElement('cbc:ID', $invoiceNumber));
+        $invoice->appendChild($doc->createElement('cbc:UUID', $this->data['uuid']));
+        // Invoice type code with transaction code as attribute
+        $invoiceTypeElement = $doc->createElement('cbc:InvoiceTypeCode', $invoiceTypeCode);
+        // Put transaction code on the name attribute if provided
+        if (!empty($this->data['invoice_transaction_code'])) {
+            $invoiceTypeElement->setAttribute('name', $this->data['invoice_transaction_code']);
+        }
+        $invoice->appendChild($invoiceTypeElement);
+        // Issue date and time (KSA local or UTC time)
+        $invoice->appendChild($doc->createElement('cbc:IssueDate', $this->data['issue_date']));
+        $invoice->appendChild($doc->createElement('cbc:IssueTime', $this->data['issue_time']));
         // Currency codes
         $invoice->appendChild($doc->createElement('cbc:DocumentCurrencyCode', $currency));
         $invoice->appendChild($doc->createElement('cbc:TaxCurrencyCode', $currency));
@@ -235,10 +249,14 @@ class Invoice
         // Line items (BG-25)
         $lineId = 1;
         foreach ($this->data['items'] as $item) {
+            // Normalise keys: support 'price' or 'unit_price' from adapter
+            $price = $item['price'] ?? ($item['unit_price'] ?? 0);
+            $vatPercentItem = $item['vat_percent'] ?? $taxPercent;
+            $vatCategoryItem = $item['vat_category'] ?? $taxCategoryCode;
             $invoiceLine = $doc->createElement('cac:InvoiceLine');
             $invoiceLine->appendChild($doc->createElement('cbc:ID', (string)$lineId));
             $invoiceLine->appendChild($doc->createElement('cbc:InvoicedQuantity', $item['quantity']));
-            $lineNet = $item['price'] * $item['quantity'];
+            $lineNet = $price * $item['quantity'];
             $lineNetEl = $doc->createElement('cbc:LineExtensionAmount', number_format($lineNet, 2, '.', ''));
             $lineNetEl->setAttribute('currencyID', $currency);
             $invoiceLine->appendChild($lineNetEl);
@@ -248,16 +266,16 @@ class Invoice
             $invoiceLine->appendChild($itemElement);
             // Tax category for item
             $classifiedTax = $doc->createElement('cac:ClassifiedTaxCategory');
-            $classifiedTax->appendChild($doc->createElement('cbc:ID', $taxCategoryCode));
-            $classifiedTax->appendChild($doc->createElement('cbc:Percent', (string)$taxPercent));
+            $classifiedTax->appendChild($doc->createElement('cbc:ID', $vatCategoryItem));
+            $classifiedTax->appendChild($doc->createElement('cbc:Percent', (string)$vatPercentItem));
             $taxSchemeIt = $doc->createElement('cac:TaxScheme');
             $taxSchemeIt->appendChild($doc->createElement('cbc:ID', 'VAT'));
             $taxSchemeIt->appendChild($doc->createElement('cbc:Name', 'VAT'));
             $classifiedTax->appendChild($taxSchemeIt);
             $invoiceLine->appendChild($classifiedTax);
-            // Price amount (net price)
+            // Price amount (net price per unit)
             $priceEl = $doc->createElement('cac:Price');
-            $priceAmount = $doc->createElement('cbc:PriceAmount', number_format($item['price'], 2, '.', ''));
+            $priceAmount = $doc->createElement('cbc:PriceAmount', number_format($price, 2, '.', ''));
             $priceAmount->setAttribute('currencyID', $currency);
             $priceEl->appendChild($priceAmount);
             $invoiceLine->appendChild($priceEl);
